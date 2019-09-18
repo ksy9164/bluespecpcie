@@ -4,7 +4,10 @@ import Vector::*;
 
 interface ZfpIfc;
 	method Action put(Vector#(4, Bit#(64)) data);
-	method ActionValue#(Bit#(316)) get;
+	method Action put_encoding_size(Bit#(6) size);
+	method Action put_matrix_cnt(Bit#(32) cnt);
+    method ActionValue#(Bit#(632)) get_last;
+    method ActionValue#(Bit#(316)) get;
 endinterface
 
 function Bit#(13) get_max(Bit#(13) a, Bit#(13) b, Bit#(13) c, Bit#(13) d);
@@ -171,9 +174,12 @@ module mkZfp (ZfpIfc);
     /* Rule to Rule FIFO */
 	FIFO#(Vector#(4, Bit#(64))) inputQ <- mkFIFO;
 	FIFO#(Bit#(316)) outputQ <- mkFIFO;
+	FIFO#(Bit#(632)) lastOutputQ <- mkFIFO;
+	FIFO#(Bit#(6)) sizeQ <- mkFIFO;
 
 	FIFO#(Vector#(4, Bit#(64))) toGetFraction <- mkFIFO;
 	FIFO#(Vector#(4, Bit#(64))) toMakeFixedPoint <- mkSizedFIFO(5);
+	FIFO#(Vector#(4, Bit#(7))) shiftQ <- mkSizedFIFO(5);
 
 	FIFO#(Vector#(4, Bit#(64))) toRowBlockTransform1Q <- mkFIFO;
 	FIFO#(Vector#(4, Bit#(64))) toRowBlockTransform2Q <- mkFIFO;
@@ -206,10 +212,12 @@ module mkZfp (ZfpIfc);
     /* Exp FIFO */
 	FIFO#(Vector#(4, Bit#(13))) exp <- mkSizedFIFO(5);
 	FIFO#(Bit#(13)) maximumExp <- mkSizedFIFO(5);
+	FIFO#(Bit#(13)) sendMaximumExp <- mkSizedFIFO(5);
 	FIFO#(Bit#(13)) encodingExp <- mkSizedFIFO(31);
 
-    /* Encoding Size */
+    /* Encoding Size, Cnt */
     Reg#(Bit#(8)) encodeBudget <- mkReg(0);
+    Reg#(Bit#(32)) totalMatrixCnt <- mkReg(100);
 
     /* Encode Map */
     Vector#(5,Reg#(Bit#(3))) msbCodeTable <- replicateM(mkReg(0));
@@ -220,18 +228,21 @@ module mkZfp (ZfpIfc);
     wbitsTable[2] <- mkReg(4); wbitsTable[3] <- mkReg(8); wbitsTable[4] <- mkReg(16);
 
 	Reg#(Bool) weightDone <- mkReg(False);
-	Reg#(Bit#(32)) cntMatrix <- mkReg(0);
+	Reg#(Bit#(2)) cntMatrix <- mkReg(0);
+	Reg#(Bit#(1)) setBudget <- mkReg(1);
 
-	Reg#(Bit#(32)) cntTrans <- mkReg(0);
+	Reg#(Bit#(2)) cntTrans <- mkReg(0);
 
 	Reg#(Bit#(32)) cntSequence <- mkReg(0);
 	Reg#(Bit#(13)) expMax <- mkReg(0);
+	Reg#(Bit#(13)) sendExpMax <- mkReg(0);
 	Reg#(Bit#(13)) currentExpMax <- mkReg(0);
 
     /* Encoding Buffer and offset */
 	Reg#(Bit#(632)) buffer <- mkReg(0);
 	Reg#(Bit#(10)) offset <- mkReg(0);
 	Reg#(Bit#(8)) bufferCycle <- mkReg(0);
+    Reg#(Bit#(32)) outBuffCycle <- mkReg(0);
 
     rule getMaxExp;
         inputQ.deq;
@@ -247,14 +258,13 @@ module mkZfp (ZfpIfc);
         tempExpMax = get_max(matrixExp[0],matrixExp[1],matrixExp[2],matrixExp[3]);
         
         /* Is that last? */
-        if ((cntMatrix+1) % 4 == 0) begin
+        if (cntMatrix + 1  == 0) begin
             if (currentExpMax > tempExpMax) begin
                 maximumExp.enq(currentExpMax);
                 encodingExp.enq(currentExpMax);
                 currentExpMax <= 0;
                 expMax <= currentExpMax;
-            end
-            else begin
+            end else begin
                 maximumExp.enq(tempExpMax);
                 encodingExp.enq(tempExpMax);
                 expMax <= tempExpMax;
@@ -266,15 +276,8 @@ module mkZfp (ZfpIfc);
             if (currentExpMax < tempExpMax) begin
                 currentExpMax <= tempExpMax;
             end
-            if (cntMatrix / 4 > 0) begin
-                maximumExp.enq(expMax);
-            end
         end
-        if (cntMatrix == 0) begin
-            Bit#(6) max_encoding = 0;
-            max_encoding = truncate(in[0]);
-            encodeBudget <= zeroExtend(max_encoding) + 1;
-        end
+
         cntMatrix <= cntMatrix + 1;
 
         exp.enq(matrixExp);
@@ -300,27 +303,52 @@ module mkZfp (ZfpIfc);
         toMakeFixedPoint.enq(outd);
     endrule
 
-    rule makeFixedPoint;
-        maximumExp.deq; //Get Maximum EXP
+    Reg#(Bit#(2)) sendExp_handle <- mkReg(0);
+    rule sendExp;
+        Bit#(13) tExpMax = 0;
+        if (sendExp_handle == 0) begin
+            maximumExp.deq; //Get Maximum EXP
+            tExpMax = maximumExp.first;
+            sendExpMax <= tExpMax;
+        end else begin
+            tExpMax = sendExpMax;
+        end
+        sendMaximumExp.enq(tExpMax);
+        sendExp_handle <= sendExp_handle + 1;
+    endrule
+
+    rule calShift;
+        sendMaximumExp.deq;
         exp.deq; // Get element's exp
-        toMakeFixedPoint.deq; // Get 256Bits fraction data
-
-        let in = toMakeFixedPoint.first;
-        let tExpMax = maximumExp.first;
+        let tExpMax = sendMaximumExp.first;
         let expCurrent = exp.first;
-
-        Vector#(4, Bit#(64)) outd = replicate(0);
-
-        /* Make Fixed Point by considering maximum Exp in Matrix */
+        Vector#(4, Bit#(7)) outd = replicate(0);
         for (Integer i = 0; i < 4; i = i+1) begin
             Bit#(13) term = tExpMax - expCurrent[i] + 2;
-            Bit#(6) shift = 0;
-
+            Bit#(7) shift = 0;
             if (term > 63) begin
-                outd[i] = 0;
+                shift = 64;
             end else begin
                 shift = truncate(term);
-                outd[i] = in[i] >> shift;
+            end
+            outd[i] = shift;
+        end
+        shiftQ.enq(outd);
+    endrule
+
+    rule makeFixedPoint;
+        toMakeFixedPoint.deq; // Get 256Bits fraction data
+        shiftQ.deq;
+        let in = toMakeFixedPoint.first;
+        let shift = shiftQ.first;
+
+        Vector#(4, Bit#(64)) outd = replicate(0);
+        /* Make Fixed Point by considering maximum Exp in Matrix */
+        for (Integer i = 0; i < 4; i = i+1) begin
+            if (shift[i] > 63) begin
+                outd[i] = 0;
+            end else begin
+                outd[i] = in[i] >> shift[i];
             end
         end
         toRowBlockTransform1Q.enq(outd);
@@ -336,6 +364,7 @@ module mkZfp (ZfpIfc);
         Bit#(64) w = in[3];
         x = (x+w); x = intShift(x); w = (w-x);
         z = (z+y); z = intShift(z); y = (y-z);
+        x = (x+z);
         in[0] = x;
         in[1] = y;
         in[2] = z;
@@ -350,8 +379,9 @@ module mkZfp (ZfpIfc);
         Bit#(64) y = in[1];
         Bit#(64) z = in[2];
         Bit#(64) w = in[3];
-        x = (x+z); x = intShift(x); z = (z-x);
+        x = intShift(x); z = (z-x);
         w = (w+y); w = intShift(w); y = (y-w);
+        w = (w+ intShift(y)); 
         in[0] = x;
         in[1] = y;
         in[2] = z;
@@ -366,13 +396,15 @@ module mkZfp (ZfpIfc);
         Bit#(64) y = in[1];
         Bit#(64) z = in[2];
         Bit#(64) w = in[3];
-        w = (w+ intShift(y)); y = (y - (intShift(w)));
-        Bit#(32) idx = cntTrans%4;
+        y = (y - (intShift(w)));
+
+        Bit#(5) idx = zeroExtend(cntTrans);
         toColBlockTransform1Q[idx*4].enq(x);
         toColBlockTransform1Q[idx*4+1].enq(y);
         toColBlockTransform1Q[idx*4+2].enq(z);
         toColBlockTransform1Q[idx*4+3].enq(w);
         cntTrans <= cntTrans + 1;
+
     endrule
 
     /* Colum Transform step 1*/
@@ -485,7 +517,7 @@ module mkZfp (ZfpIfc);
                 toGatherBits[j][i].deq;
                 in[j] = toGatherBits[j][i].first;
             end
-            for (Bit#(8)j=0; j<8 && i*8+j < encodeBudget; j=j+1) begin
+            for (Bit#(8)j=0; j<8 && i*8+j < 64; j=j+1) begin
                 temp = get_each_data(in,7-j);
                 toMakeHeader[i*8+j].enq(temp);
             end
@@ -532,60 +564,61 @@ module mkZfp (ZfpIfc);
     /* Merge data (gather each 4 compressed Data) */
     for (Bit#(8)i=0;i<16;i=i+1) begin
         rule mergeData;
-            if (i*4 < encodeBudget) begin
-                Bit#(88) outd = 0;
-                Bit#(10) amount = 0;
+            Bit#(88) outd = 0;
+            Bit#(10) amount = 0;
                 /* encode E bits */
-                if (i == 0) begin
-                    encodingExp.deq;
-                    let e = encodingExp.first;
-                    outd = outd | zeroExtend(e);
-                    amount = amount + 12;
-                end
+            if (i == 0) begin
+                encodingExp.deq;
+                let e = encodingExp.first;
+                outd = outd | zeroExtend(e);
+                amount = amount + 12;
+            end
+            for (Bit#(8)j=0; j < 4 ; j=j+1) begin
+                toMerge_amount[i*4+j].deq;
+                toMerge_data[i*4+j].deq;
+                let d = toMerge_data[i*4+j].first;
+                let t_amount = toMerge_amount[i*4+j].first;
 
-                for (Bit#(8)j=0; j < 4 && (i*4 +j) < encodeBudget; j=j+1) begin
-                    toMerge_amount[i*4+j].deq;
-                    toMerge_data[i*4+j].deq;
-                    let d = toMerge_data[i*4+j].first;
-                    let t_amount = toMerge_amount[i*4+j].first;
+                if (i*4 + j < encodeBudget) begin
                     outd = mergeCat_4_data(outd,d,zeroExtend(t_amount));
-                    amount = amount + zeroExtend(t_amount);
+                end else begin
+                    t_amount = 0;
                 end
-                toMerge_8_amount[i].enq(amount);
-                toMerge_8_data[i].enq(outd);
-        end
+                amount = amount + zeroExtend(t_amount);
+            end
+
+            toMerge_8_amount[i].enq(amount);
+            toMerge_8_data[i].enq(outd);
         endrule
     end
 
     /* Merge data (gather each 8 compressed Data) */
     for (Bit#(8)i=0;i<8;i=i+1) begin
         rule mergeData;
-            if (i*8 < encodeBudget) begin
-                toMerge_8_amount[i*2].deq;
-                toMerge_8_amount[i*2+1].deq;
-                toMerge_8_data[i*2].deq;
-                toMerge_8_data[i*2+1].deq;
-                Bit#(164) outd = zeroExtend(toMerge_8_data[i*2].first);
-                Bit#(10) amount = toMerge_8_amount[i*2].first;
-                let d = toMerge_8_data[i*2+1].first;
-                let t_amount = toMerge_8_amount[i*2+1].first;
+            toMerge_8_amount[i*2].deq;
+            toMerge_8_amount[i*2+1].deq;
+            toMerge_8_data[i*2].deq;
+            toMerge_8_data[i*2+1].deq;
+            Bit#(164) outd = zeroExtend(toMerge_8_data[i*2].first);
+            Bit#(10) amount = toMerge_8_amount[i*2].first;
+            let d = toMerge_8_data[i*2+1].first;
+            let t_amount = toMerge_8_amount[i*2+1].first;
 
-                outd = mergeCat_8_data(outd,d,t_amount);
-                amount = amount+t_amount;
+            outd = mergeCat_8_data(outd,d,t_amount);
+            amount = amount+t_amount;
 
-                toMerge_last_amount[i].enq(amount);
-                toMerge_last_data[i].enq(outd);
-        end
+            toMerge_last_amount[i].enq(amount);
+            toMerge_last_data[i].enq(outd);
         endrule
     end
     /* Merge Last! data */
     for (Bit#(8)i=0;i<4;i=i+1) begin
         rule mergeLastData;
+            toMerge_last_amount[i*2].deq;
+            toMerge_last_amount[i*2+1].deq;
+            toMerge_last_data[i*2].deq;
+            toMerge_last_data[i*2+1].deq;
             if (i*16 < encodeBudget) begin
-                toMerge_last_amount[i*2].deq;
-                toMerge_last_amount[i*2+1].deq;
-                toMerge_last_data[i*2].deq;
-                toMerge_last_data[i*2+1].deq;
                 Bit#(316) outd = zeroExtend(toMerge_last_data[i*2].first);
                 Bit#(10) amount = toMerge_last_amount[i*2].first;
                 let d = toMerge_last_data[i*2+1].first;
@@ -599,7 +632,7 @@ module mkZfp (ZfpIfc);
             end
         endrule
     end
-
+(* descending_urgency = "outBuff, sendRemains" *)
     rule outBuff;
         Bit#(632) cbuf = buffer;
         Bit#(10) coff = offset;
@@ -624,12 +657,17 @@ module mkZfp (ZfpIfc);
             offset <= coff;
             buffer <= cbuf;
         end
-
         if( (encodeBudget-1)/16 == cycle) begin
             bufferCycle <= 0;
         end else begin
             bufferCycle <= bufferCycle + 1;
         end
+        outBuffCycle <= outBuffCycle + 1;
+    endrule
+
+    rule sendRemains(outBuffCycle / ((zeroExtend(encodeBudget) - 1) / 16 + 1) == totalMatrixCnt);
+        lastOutputQ.enq(buffer);
+        outBuffCycle <= 0;
     endrule
 
     /* Get input from Top.bsv */
@@ -637,9 +675,22 @@ module mkZfp (ZfpIfc);
         inputQ.enq(data);
     endmethod
 
+    method Action put_encoding_size(Bit#(6) size);
+        encodeBudget <= zeroExtend(size) + 1;
+    endmethod
+
+    method Action put_matrix_cnt(Bit#(32) cnt);
+        totalMatrixCnt <= cnt;
+    endmethod
+
     /* Send Output to Top.bsv */
     method ActionValue#(Bit#(316)) get;
         outputQ.deq;
         return outputQ.first;
+    endmethod
+
+    method ActionValue#(Bit#(632)) get_last;
+        lastOutputQ.deq;
+        return lastOutputQ.first;
     endmethod
 endmodule

@@ -26,7 +26,8 @@ module mkHwMain#(PcieUserIfc pcie)
 	Reg#(Bit#(32)) dataBuffer0 <- mkReg(0, clocked_by pcieclk, reset_by pcierst);
 	Reg#(Bit#(32)) dataBuffer1 <- mkReg(0, clocked_by pcieclk, reset_by pcierst);
 	Reg#(Bit#(32)) writeCounter <- mkReg(0, clocked_by pcieclk, reset_by pcierst);
-    
+    Reg#(Bit#(32)) isSet <- mkReg(0);
+
     ZfpIfc zfp <- mkZfp;
 	FIFO#(Bit#(316)) next <- mkFIFO;
 
@@ -79,6 +80,16 @@ module mkHwMain#(PcieUserIfc pcie)
         temp[2] = zeroExtend(dataBuffer0);
         temp[3]= zeroExtend(dataBuffer1);
         zfp.put(temp);
+	endrule
+
+	rule setting(isSet == 0);
+	    zfp.put_encoding_size(truncate(dataBuffer1));
+	    zfp.put_matrix_cnt(100);
+	    isSet <= 1;
+	endrule
+
+	rule finalOutput;
+	    let in = zfp.get_last;
 	endrule
 
 endmodule
