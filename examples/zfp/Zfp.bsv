@@ -1,15 +1,15 @@
 import Connectable::*;
 import FIFO::*;
 import Vector::*;
-
 interface ZfpIfc;
-	method Action put(Vector#(4, Bit#(64)) data);
-	method Action put_encoding_size(Bit#(6) size);
-	method Action put_matrix_cnt(Bit#(32) cnt);
-    method ActionValue#(Bit#(632)) get_last;
-    method ActionValue#(Bit#(316)) get;
+    method Action put(Vector#(4, Bit#(64)) data);
+    method Action put_encoding_size(Bit#(5) size);
+    method Action put_matrix_cnt(Bit#(32) cnt);
+    method ActionValue#(Bit#(328)) get_last;
+    method ActionValue#(Bit#(164)) get;
 endinterface
 
+/* function */
 function Bit#(13) get_max(Bit#(13) a, Bit#(13) b, Bit#(13) c, Bit#(13) d);
     if (a >= b && a >= c && a >= d)
         return a;
@@ -20,55 +20,11 @@ function Bit#(13) get_max(Bit#(13) a, Bit#(13) b, Bit#(13) c, Bit#(13) d);
     else
         return d;
 endfunction
-
-function Bit#(19) dataCat(Bit#(3) h, Bit#(16) d, Bit#(19) outd);
-    case(h)
-        0: begin
-            outd = outd << 1; 
-            outd = outd | zeroExtend(d);
-        end
-        4: begin
-            outd = outd << 1; 
-            outd = outd | zeroExtend(d);
-        end
-        5: begin 
-            outd = outd << 4; 
-            outd = outd | zeroExtend(d);
-        end
-        6: begin 
-            outd = outd << 8; 
-            outd = outd | zeroExtend(d);
-        end
-        7: begin 
-            outd = outd << 16; 
-            outd = outd | zeroExtend(d);
-        end
-    endcase
-    return outd;
-endfunction
-function Bit#(316) mergeCat (Bit#(316)outd, Bit#(164)d, Bit#(10) amount);
-    outd = outd << amount;
-    outd = outd | zeroExtend(d);
-    return outd;
-endfunction
-
-function Bit#(164) mergeCat_8_data (Bit#(164)outd, Bit#(88)d, Bit#(10) amount);
-    outd = outd << amount;
-    outd = outd | zeroExtend(d);
-    return outd;
-endfunction
-
-function Bit#(88) mergeCat_4_data (Bit#(88)outd, Bit#(19)d, Bit#(10) amount);
-    outd = outd << amount;
-    outd = outd | zeroExtend(d);
-    return outd;
-endfunction
-
-function Bit#(64) intShift(Bit#(64) t);
+function Bit#(32) intShift(Bit#(32) t);
     Bit#(1) s;
-    s = t[63];
+    s = t[31];
     t = t >> 1;
-    t[63] = s;
+    t[31] = s;
     return t;
 endfunction
 function Bit#(8) permutation_idx(Bit#(8) idx);
@@ -93,18 +49,6 @@ function Bit#(8) permutation_idx(Bit#(8) idx);
     endcase
     return perm_idx;
 endfunction
-function Bit#(64) int_to_uint(Bit#(64) t);
-  return (t + 64'haaaaaaaaaaaaaaaa) ^ 64'haaaaaaaaaaaaaaaa;
-endfunction
-
-function Bit#(16) get_each_data (Vector#(16,Bit#(8)) in, Bit#(8) num);
-    Bit#(16) acuBits;
-    for (Bit#(8) i = 0; i < 16; i = i + 1) begin
-        acuBits[i] = in[i][num];
-    end
-    return acuBits;
-endfunction
-
 function Bit#(3) get_table_idx (Bit#(16) d);
     Bit#(5) msb = 0;
     if (d >= 256) begin
@@ -147,102 +91,97 @@ function Bit#(3) get_table_idx (Bit#(16) d);
     else
         return 4;
 endfunction
-
-function Bit#(5) amountSum(Bit#(3) h, Bit#(5)amount);
+function Bit#(16) get_each_data (Vector#(16,Bit#(8)) in, Bit#(8) num);
+    Bit#(16) acuBits;
+    for (Bit#(8) i = 0; i < 16; i = i + 1) begin
+        acuBits[i] = in[i][num];
+    end
+    return acuBits;
+endfunction
+function Bit#(32) int_to_uint(Bit#(32) t);
+  return (t + 32'haaaaaaaa) ^ 32'haaaaaaaa;
+endfunction
+function Bit#(4) get_h_amount(Bit#(3) h);
+    if (h == 0)
+        return 1;
+    else
+        return 3;
+endfunction
+function Bit#(7) get_d_amount(Bit#(3) h);
+    Bit#(7) amount = 0;
     case(h)
-        0: amount = amount + 1 + 1;
-        4: amount = amount + 1 + 3;
-        5: amount = amount + 4 + 3;
-        6: amount = amount + 8 + 3;
-        7: amount = amount + 16 + 3;
+        0:  amount = 1;
+        4:  amount = 1;
+        5:  amount = 4;
+        6:  amount = 8;
+        7:  amount = 16;
     endcase
     return amount;
 endfunction
-
-function Bit#(19) headCat(Bit#(3) h, Bit#(19) outd);
-    if (h == 0) begin
-        outd = outd << 1;
-    end else begin
-        outd = outd << 3;
-        outd = outd | zeroExtend(h);
-    end
-    return outd;
-endfunction
-
 (* synthesize *)
 module mkZfp (ZfpIfc);
     /* Rule to Rule FIFO */
-	FIFO#(Vector#(4, Bit#(64))) inputQ <- mkFIFO;
-	FIFO#(Bit#(316)) outputQ <- mkFIFO;
-	FIFO#(Bit#(632)) lastOutputQ <- mkFIFO;
-	FIFO#(Bit#(6)) sizeQ <- mkFIFO;
+    FIFO#(Vector#(4, Bit#(64))) inputQ <- mkFIFO;
+    FIFO#(Bit#(164)) outputQ <- mkFIFO;
+    FIFO#(Vector#(4, Bit#(64))) toGetFraction <- mkFIFO;
+    FIFO#(Vector#(4, Bit#(32))) toMakeFixedPoint <- mkSizedFIFO(5);
+    FIFO#(Bit#(13)) sendMaximumExp <- mkSizedFIFO(5);
+    FIFO#(Vector#(4, Bit#(7))) shiftQ <- mkSizedFIFO(5);
+    
+    FIFO#(Vector#(4, Bit#(32))) toRowBlockTransform <- mkFIFO;
+    FIFO#(Vector#(4, Bit#(32))) toRowBlockTransform2Q <- mkFIFO;
+    FIFO#(Vector#(4, Bit#(32))) toRowBlockTransform3Q <- mkFIFO;
 
-	FIFO#(Vector#(4, Bit#(64))) toGetFraction <- mkFIFO;
-	FIFO#(Vector#(4, Bit#(64))) toMakeFixedPoint <- mkSizedFIFO(5);
-	FIFO#(Vector#(4, Bit#(7))) shiftQ <- mkSizedFIFO(5);
+    Vector#(16,FIFO#(Bit#(32))) toColBlockTransform <- replicateM(mkFIFO);
+    Vector#(16,FIFO#(Bit#(32))) toColBlockTransform2Q <- replicateM(mkFIFO);
+    Vector#(16,FIFO#(Bit#(32))) toColBlockTransform3Q <- replicateM(mkFIFO);
 
-	FIFO#(Vector#(4, Bit#(64))) toRowBlockTransform1Q <- mkFIFO;
-	FIFO#(Vector#(4, Bit#(64))) toRowBlockTransform2Q <- mkFIFO;
-	FIFO#(Vector#(4, Bit#(64))) toRowBlockTransform3Q <- mkFIFO;
+    Vector#(16,FIFO#(Bit#(32))) toPermutation <- replicateM(mkFIFO);
+    Vector#(16,FIFO#(Bit#(32))) toDivideBits <- replicateM(mkFIFO);
+    Vector#(16,Vector#(4,FIFO#(Bit#(8)))) toGatherBits <- replicateM(replicateM(mkFIFO));
+    Vector#(32,FIFO#(Bit#(16))) toMakeHeader <- replicateM(mkFIFO);
+    Vector#(32,FIFO#(Bit#(16))) merge_step1_data<- replicateM(mkFIFO);
+    Vector#(32,FIFO#(Bit#(3))) merge_step1_header<- replicateM(mkFIFO);
 
-	Vector#(16,FIFO#(Bit#(64))) toColBlockTransform1Q <- replicateM(mkFIFO);
-	Vector#(16,FIFO#(Bit#(64))) toColBlockTransform2Q <- replicateM(mkFIFO);
-	Vector#(16,FIFO#(Bit#(64))) toColBlockTransform3Q <- replicateM(mkFIFO);
+    Vector#(8,FIFO#(Bit#(64))) merge_step2_data <- replicateM(mkFIFO);
+    Vector#(8,FIFO#(Bit#(12))) merge_step2_header<- replicateM(mkFIFO);
+    Vector#(8,FIFO#(Bit#(7))) merge_step2_data_amount<- replicateM(mkFIFO);
+    Vector#(8,FIFO#(Bit#(4))) merge_step2_header_amount<- replicateM(mkFIFO);
 
-	Vector#(16,FIFO#(Bit#(64))) toPermutation <- replicateM(mkFIFO);
-	Vector#(16,FIFO#(Bit#(64))) toDivideBits <- replicateM(mkFIFO);
-	Vector#(16,Vector#(8,FIFO#(Bit#(8)))) toGatherBits <- replicateM(replicateM(mkFIFO));
-	Vector#(64,FIFO#(Bit#(16))) toMakeHeader <- replicateM(mkFIFO);
+    Vector#(4,FIFO#(Bit#(128))) toOut_d<- replicateM(mkFIFO);
+    Vector#(4,FIFO#(Bit#(24))) toOut_h<- replicateM(mkFIFO);
+    Vector#(4,FIFO#(Bit#(8))) toOut_d_amount<- replicateM(mkFIFO);
+    Vector#(4,FIFO#(Bit#(5))) toOut_h_amount<- replicateM(mkFIFO);
 
-	Vector#(64,FIFO#(Bit#(16))) toMergeHeader_data<- replicateM(mkFIFO);
-	Vector#(64,FIFO#(Bit#(3))) toMergeHeader_header_idx<- replicateM(mkFIFO);
+    FIFO#(Bit#(328)) lastOutputQ <- mkFIFO;
 
-	Vector#(64,FIFO#(Bit#(19))) toMerge_data<- replicateM(mkFIFO);
-	Vector#(64,FIFO#(Bit#(5))) toMerge_amount <- replicateM(mkFIFO);
-
-	Vector#(16,FIFO#(Bit#(88))) toMerge_8_data <- replicateM(mkFIFO);
-	Vector#(16,FIFO#(Bit#(10))) toMerge_8_amount <- replicateM(mkFIFO);
-
-	Vector#(8,FIFO#(Bit#(164))) toMerge_last_data <- replicateM(mkFIFO);
-	Vector#(8,FIFO#(Bit#(10))) toMerge_last_amount <- replicateM(mkFIFO);
-
-	Vector#(4,FIFO#(Bit#(316))) toOutBuff_data <- replicateM(mkFIFO);
-	Vector#(4,FIFO#(Bit#(10))) toOutBuff_amount <- replicateM(mkFIFO);
-
-    /* Exp FIFO */
-	FIFO#(Vector#(4, Bit#(13))) exp <- mkSizedFIFO(5);
-	FIFO#(Bit#(13)) maximumExp <- mkSizedFIFO(5);
-	FIFO#(Bit#(13)) sendMaximumExp <- mkSizedFIFO(5);
-	FIFO#(Bit#(13)) encodingExp <- mkSizedFIFO(31);
-
-    /* Encoding Size, Cnt */
-    Reg#(Bit#(8)) encodeBudget <- mkReg(0);
+    /* Encoding Size */
+    Reg#(Bit#(6)) encodeBudget <- mkReg(32);
     Reg#(Bit#(32)) totalMatrixCnt <- mkReg(100);
 
     /* Encode Map */
     Vector#(5,Reg#(Bit#(3))) msbCodeTable <- replicateM(mkReg(0));
     msbCodeTable[0] <- mkReg(0); msbCodeTable[1] <- mkReg(4); msbCodeTable[2] <- mkReg(5); msbCodeTable[3] <- mkReg(6); msbCodeTable[4] <- mkReg(7);
-    Vector#(5,Reg#(Bit#(5))) msbBitsTable <- replicateM(mkReg(3));
-    msbBitsTable[0] <- mkReg(1);
-    Vector#(5,Reg#(Bit#(5))) wbitsTable <- replicateM(mkReg(1));
-    wbitsTable[2] <- mkReg(4); wbitsTable[3] <- mkReg(8); wbitsTable[4] <- mkReg(16);
 
-	Reg#(Bool) weightDone <- mkReg(False);
-	Reg#(Bit#(2)) cntMatrix <- mkReg(0);
-	Reg#(Bit#(1)) setBudget <- mkReg(1);
-
-	Reg#(Bit#(2)) cntTrans <- mkReg(0);
-
-	Reg#(Bit#(32)) cntSequence <- mkReg(0);
-	Reg#(Bit#(13)) expMax <- mkReg(0);
-	Reg#(Bit#(13)) sendExpMax <- mkReg(0);
-	Reg#(Bit#(13)) currentExpMax <- mkReg(0);
-
-    /* Encoding Buffer and offset */
-	Reg#(Bit#(632)) buffer <- mkReg(0);
-	Reg#(Bit#(10)) offset <- mkReg(0);
-	Reg#(Bit#(8)) bufferCycle <- mkReg(0);
+    Reg#(Bit#(2)) inputCycle <- mkReg(0);
+    /* Exp FIFO */
+    FIFO#(Vector#(4, Bit#(13))) exp <- mkSizedFIFO(5);
+    FIFO#(Bit#(13)) maximumExp <- mkSizedFIFO(5);
+    FIFO#(Bit#(13)) encodingExp <- mkSizedFIFO(31);
+    Reg#(Bit#(13)) currentExpMax <- mkReg(0);
+    Reg#(Bit#(13)) expMax <- mkReg(0);
+    Reg#(Bit#(13)) sendExpMax <- mkReg(0);
     Reg#(Bit#(32)) outBuffCycle <- mkReg(0);
+
+    /* BlockTransform */
+    Reg#(Bit#(2)) transCycle <- mkReg(0);
+
+    Reg#(Bit#(32)) cntSequence <- mkReg(0);
+
+    /* output */
+    Reg#(Bit#(2)) outCycle <- mkReg(0);
+    Reg#(Bit#(328)) output_buffer <- mkReg(0);
+    Reg#(Bit#(9)) output_buffer_off <- mkReg(0);
 
     rule getMaxExp;
         inputQ.deq;
@@ -258,7 +197,7 @@ module mkZfp (ZfpIfc);
         tempExpMax = get_max(matrixExp[0],matrixExp[1],matrixExp[2],matrixExp[3]);
         
         /* Is that last? */
-        if (cntMatrix + 1  == 0) begin
+        if (inputCycle == 3) begin
             if (currentExpMax > tempExpMax) begin
                 maximumExp.enq(currentExpMax);
                 encodingExp.enq(currentExpMax);
@@ -277,9 +216,7 @@ module mkZfp (ZfpIfc);
                 currentExpMax <= tempExpMax;
             end
         end
-
-        cntMatrix <= cntMatrix + 1;
-
+        inputCycle <= inputCycle + 1;
         exp.enq(matrixExp);
         toGetFraction.enq(in);
     endrule
@@ -287,19 +224,18 @@ module mkZfp (ZfpIfc);
     rule getFraction;
         toGetFraction.deq;
         Vector#(4, Bit#(64)) in = toGetFraction.first;
-        Vector#(4, Bit#(64)) outd = replicate(0);
+        Vector#(4, Bit#(32)) outd = replicate(0);
         Vector#(4, Bit#(52)) frac = replicate(0);
 
         /* Get Fraction from double data be using Bit operation <<, zeroextention, truncate
             * Make output vecotor and send to NextStep which is makeFixedPoint */
         for (Integer i = 0; i < 4; i = i+1) begin
-            frac[i] = in[i][51:0];
-            outd[i] = zeroExtend(frac[i]);
-            outd[i] = zeroExtend(outd[i]<<11);
+            frac[i] = truncate(in[i]);
             /* Make Signed Extention */
-            outd[i][63] = 1;
+            frac[i] = frac[i] >> 1;
+            frac[i][51] = 1;
+            outd[i] = truncateLSB(frac[i]);
         end
-
         toMakeFixedPoint.enq(outd);
     endrule
 
@@ -326,8 +262,8 @@ module mkZfp (ZfpIfc);
         for (Integer i = 0; i < 4; i = i+1) begin
             Bit#(13) term = tExpMax - expCurrent[i] + 2;
             Bit#(7) shift = 0;
-            if (term > 63) begin
-                shift = 64;
+            if (term > 31) begin
+                shift = 32;
             end else begin
                 shift = truncate(term);
             end
@@ -337,178 +273,143 @@ module mkZfp (ZfpIfc);
     endrule
 
     rule makeFixedPoint;
-        toMakeFixedPoint.deq; // Get 256Bits fraction data
+        toMakeFixedPoint.deq; // Get (32x4)Bits fraction data
         shiftQ.deq;
         let in = toMakeFixedPoint.first;
         let shift = shiftQ.first;
 
-        Vector#(4, Bit#(64)) outd = replicate(0);
+        Vector#(4, Bit#(32)) outd = replicate(0);
         /* Make Fixed Point by considering maximum Exp in Matrix */
         for (Integer i = 0; i < 4; i = i+1) begin
-            if (shift[i] > 63) begin
+            if (shift[i] > 31) begin
                 outd[i] = 0;
             end else begin
                 outd[i] = in[i] >> shift[i];
             end
         end
-        toRowBlockTransform1Q.enq(outd);
+        toRowBlockTransform.enq(outd);
     endrule
 
-    /* Row BlockTransform */
-    rule rowBlockTransform1;
-        toRowBlockTransform1Q.deq;
-        Vector#(4, Bit#(64)) in = toRowBlockTransform1Q.first;
-        Bit#(64) x = in[0];
-        Bit#(64) y = in[1];
-        Bit#(64) z = in[2];
-        Bit#(64) w = in[3];
-        x = (x+w); x = intShift(x); w = (w-x);
-        z = (z+y); z = intShift(z); y = (y-z);
-        x = (x+z);
-        in[0] = x;
-        in[1] = y;
-        in[2] = z;
-        in[3] = w;
+    /* Row Transform */
+    rule rowBlockTransform;
+        toRowBlockTransform.deq;
+        Vector#(4, Bit#(32)) in = toRowBlockTransform.first;
+        in[0] = (in[0]+in[3]); in[0] = intShift(in[0]); in[3] = (in[3]-in[0]);
+        in[2] = (in[2]+in[1]); in[2] = intShift(in[2]); in[1] = (in[1]-in[2]);
         toRowBlockTransform2Q.enq(in);
     endrule
 
-    rule rowBlockTransform2;
+    rule rowBlockTransform_2;
         toRowBlockTransform2Q.deq;
-        Vector#(4, Bit#(64)) in = toRowBlockTransform2Q.first;
-        Bit#(64) x = in[0];
-        Bit#(64) y = in[1];
-        Bit#(64) z = in[2];
-        Bit#(64) w = in[3];
-        x = intShift(x); z = (z-x);
-        w = (w+y); w = intShift(w); y = (y-w);
-        w = (w+ intShift(y)); 
-        in[0] = x;
-        in[1] = y;
-        in[2] = z;
-        in[3] = w;
+        Vector#(4, Bit#(32)) in = toRowBlockTransform2Q.first;
+        in[0] = (in[0]+in[2]); in[0] = intShift(in[0]); in[2] = (in[2]-in[0]);
+        in[3] = (in[3]+in[1]); in[3] = intShift(in[3]); in[1] = (in[1]-in[3]);
         toRowBlockTransform3Q.enq(in);
     endrule
 
-    rule rowBlockTransform3;
+    rule rowBlockTransform_3;
+        Bit#(5) idx = zeroExtend(transCycle);
         toRowBlockTransform3Q.deq;
-        Vector#(4, Bit#(64)) in = toRowBlockTransform3Q.first;
-        Bit#(64) x = in[0];
-        Bit#(64) y = in[1];
-        Bit#(64) z = in[2];
-        Bit#(64) w = in[3];
-        y = (y - (intShift(w)));
-
-        Bit#(5) idx = zeroExtend(cntTrans);
-        toColBlockTransform1Q[idx*4].enq(x);
-        toColBlockTransform1Q[idx*4+1].enq(y);
-        toColBlockTransform1Q[idx*4+2].enq(z);
-        toColBlockTransform1Q[idx*4+3].enq(w);
-        cntTrans <= cntTrans + 1;
-
+        Vector#(4, Bit#(32)) in = toRowBlockTransform3Q.first;
+        in[3] = (in[3]+ intShift(in[1])); in[1] = (in[1] - (intShift(in[3])));
+        toColBlockTransform[idx*4].enq(in[0]);
+        toColBlockTransform[idx*4+1].enq(in[1]);
+        toColBlockTransform[idx*4+2].enq(in[2]);
+        toColBlockTransform[idx*4+3].enq(in[3]);
+        transCycle <= transCycle + 1;
     endrule
 
-    /* Colum Transform step 1*/
+    /* Colum Transform */
     for (Bit#(8)i=0;i<4;i=i+1) begin
-        rule colTransform1;
-            toColBlockTransform1Q[i+12].deq;
-            toColBlockTransform1Q[i+8].deq;
-            toColBlockTransform1Q[i+4].deq;
-            toColBlockTransform1Q[i].deq;
-            Bit#(64) x = toColBlockTransform1Q[i].first;
-            Bit#(64) y = toColBlockTransform1Q[i+4].first;
-            Bit#(64) z = toColBlockTransform1Q[i+8].first;
-            Bit#(64) w = toColBlockTransform1Q[i+12].first;
+        rule colTransform;
+            Vector#(4, Bit#(32)) in = replicate(0);
+            toColBlockTransform[i+12].deq;
+            toColBlockTransform[i+8].deq;
+            toColBlockTransform[i+4].deq;
+            toColBlockTransform[i].deq;
+            in[0] = toColBlockTransform[i].first;
+            in[1] = toColBlockTransform[i+4].first;
+            in[2] = toColBlockTransform[i+8].first;
+            in[3] = toColBlockTransform[i+12].first;
 
-            x = (x+w); x = intShift(x); w = (w-x);
-            z = (z+y); z = intShift(z); y = (y-z);
+            in[0] = (in[0]+in[3]); in[0] = intShift(in[0]); in[3] = (in[3]-in[0]);
+            in[2] = (in[2]+in[1]); in[2] = intShift(in[2]); in[1] = (in[1]-in[2]);
 
-           toColBlockTransform2Q[i].enq(x);
-           toColBlockTransform2Q[i+4].enq(y);
-           toColBlockTransform2Q[i+8].enq(z);
-           toColBlockTransform2Q[i+12].enq(w);
+            toColBlockTransform2Q[i].enq(in[0]);
+            toColBlockTransform2Q[i+4].enq(in[1]);
+            toColBlockTransform2Q[i+8].enq(in[2]);
+            toColBlockTransform2Q[i+12].enq(in[3]);
         endrule
     end
-
-    /* Colum Transform step2 */
     for (Bit#(8)i=0;i<4;i=i+1) begin
-        rule colTransform3;
+        rule colTransform_2;
+            Vector#(4, Bit#(32)) in = replicate(0);
             toColBlockTransform2Q[i+12].deq;
             toColBlockTransform2Q[i+8].deq;
             toColBlockTransform2Q[i+4].deq;
             toColBlockTransform2Q[i].deq;
-            Bit#(64) x = toColBlockTransform2Q[i].first;
-            Bit#(64) y = toColBlockTransform2Q[i+4].first;
-            Bit#(64) z = toColBlockTransform2Q[i+8].first;
-            Bit#(64) w = toColBlockTransform2Q[i+12].first;
+            in[0] = toColBlockTransform2Q[i].first;
+            in[1] = toColBlockTransform2Q[i+4].first;
+            in[2] = toColBlockTransform2Q[i+8].first;
+            in[3] = toColBlockTransform2Q[i+12].first;
 
-            x = (x+z); x = intShift(x); z = (z-x);
-            w = (w+y); w = intShift(w); y = (y-w);
+            in[0] = (in[0]+in[2]); in[0] = intShift(in[0]); in[2] = (in[2]-in[0]);
+            in[3] = (in[3]+in[1]); in[3] = intShift(in[3]); in[1] = (in[1]-in[3]);
 
-           toColBlockTransform3Q[i].enq(x);
-           toColBlockTransform3Q[i+4].enq(y);
-           toColBlockTransform3Q[i+8].enq(z);
-           toColBlockTransform3Q[i+12].enq(w);
+            toColBlockTransform3Q[i].enq(in[0]);
+            toColBlockTransform3Q[i+4].enq(in[1]);
+            toColBlockTransform3Q[i+8].enq(in[2]);
+            toColBlockTransform3Q[i+12].enq(in[3]);
         endrule
     end
-
-    /* Colum Transform step3 */
     for (Bit#(8)i=0;i<4;i=i+1) begin
-        rule colTransform5;
+        rule colTransform_2;
+            Vector#(4, Bit#(32)) in = replicate(0);
             toColBlockTransform3Q[i+12].deq;
             toColBlockTransform3Q[i+8].deq;
             toColBlockTransform3Q[i+4].deq;
             toColBlockTransform3Q[i].deq;
-            Bit#(64) x = toColBlockTransform3Q[i].first;
-            Bit#(64) y = toColBlockTransform3Q[i+4].first;
-            Bit#(64) z = toColBlockTransform3Q[i+8].first;
-            Bit#(64) w = toColBlockTransform3Q[i+12].first;
-            w = (w+ intShift(y)); y = (y - (intShift(w)));
-            toPermutation[i].enq(x);
-            toPermutation[i+4].enq(y);
-            toPermutation[i+8].enq(z);
-            toPermutation[i+12].enq(w);
+            in[0] = toColBlockTransform3Q[i].first;
+            in[1] = toColBlockTransform3Q[i+4].first;
+            in[2] = toColBlockTransform3Q[i+8].first;
+            in[3] = toColBlockTransform3Q[i+12].first;
+
+            in[3] = (in[3]+ intShift(in[1])); in[1] = (in[1] - (intShift(in[3])));
+
+            toPermutation[i].enq(in[0]);
+            toPermutation[i+4].enq(in[1]);
+            toPermutation[i+8].enq(in[2]);
+            toPermutation[i+12].enq(in[3]);
         endrule
     end
 
     /* Permutation data */
     for (Bit#(8)i=0;i<4;i=i+1) begin
         rule permutation;
-            toPermutation[i+12].deq;
-            toPermutation[i+8].deq;
-            toPermutation[i+4].deq;
-            toPermutation[i].deq;
-            Bit#(64) x = toPermutation[i].first;
-            Bit#(64) y = toPermutation[i+4].first;
-            Bit#(64) z = toPermutation[i+8].first;
-            Bit#(64) w = toPermutation[i+12].first;
-
-            x = int_to_uint(x);
-            y = int_to_uint(y);
-            z = int_to_uint(z);
-            w = int_to_uint(w);
-
-            toDivideBits[permutation_idx(i)].enq(x);
-            toDivideBits[permutation_idx(i+4)].enq(y);
-            toDivideBits[permutation_idx(i+8)].enq(z);
-            toDivideBits[permutation_idx(i+12)].enq(w);
+            for (Bit#(8)j=0; j<4; j=j+1) begin
+                toPermutation[i+j*4].deq;
+                let temp = toPermutation[i+j*4].first;
+                temp = int_to_uint(temp);
+                toDivideBits[permutation_idx(i+j*4)].enq(temp);
+            end
         endrule
     end
-
+    
     /* Extract Each 8Bits(total 64) from 4x4 Matrix */
     for (Bit#(8)i=0;i<16;i=i+1) begin
         rule extractBits;
             /* Get ith element */
             toDivideBits[i].deq;
             let in = toDivideBits[i].first;
-            for (Bit#(8)j=0;j<8;j=j+1) begin
+            for (Bit#(8)j=0;j<4;j=j+1) begin
                 /* Divide data Each 8Bits */
-	            toGatherBits[i][j].enq(in[(63-j*8):(56-j*8)]);
+                toGatherBits[i][j].enq(in[(31-j*8):(24-j*8)]);
             end
         endrule
     end
 
     /* Gather Bits */
-    for (Bit#(8)i=0;i<8;i=i+1) begin
+    for (Bit#(8)i=0;i<4;i=i+1) begin
         rule gatherBits;
             Vector#(16, Bit#(8)) in = replicate(0);
             Bit#(16) temp = 0;
@@ -517,7 +418,7 @@ module mkZfp (ZfpIfc);
                 toGatherBits[j][i].deq;
                 in[j] = toGatherBits[j][i].first;
             end
-            for (Bit#(8)j=0; j<8 && i*8+j < 64; j=j+1) begin
+            for (Bit#(8)j=0; j<8; j=j+1) begin
                 temp = get_each_data(in,7-j);
                 toMakeHeader[i*8+j].enq(temp);
             end
@@ -525,148 +426,144 @@ module mkZfp (ZfpIfc);
     end
 
     /* Make Header */
-    for (Bit#(8)i=0;i<64;i=i+1) begin
+    for (Bit#(6)i=0;i<32;i=i+1) begin
         rule makeHeader;
             Bit#(3) ti = 0;
             Bit#(3) header = 0;
 
             toMakeHeader[i].deq;
             let in = toMakeHeader[i].first;
-            ti = get_table_idx(in);
-
-            toMergeHeader_header_idx[i].enq(ti);
-            toMergeHeader_data[i].enq(in);
-        endrule
-    end
-
-    /* Merge Header and Data */
-    for (Bit#(8)i=0;i<64;i=i+1) begin
-        rule mergeHeader;
-            Bit#(3) header = 0;
-            Bit#(19) outd = 0;
-            Bit#(5) amount = 0;
-
-            toMergeHeader_data[i].deq;
-            toMergeHeader_header_idx[i].deq;
-            let in = toMergeHeader_data[i].first;
-            let ti = toMergeHeader_header_idx[i].first;
-            header = msbCodeTable[ti];
-
-            outd = headCat(header,outd);
-            outd = dataCat(header,in,outd);
-            amount = amountSum(header,amount);
-
-            toMerge_data[i].enq(outd);
-            toMerge_amount[i].enq(amount);
-        endrule
-    end
-
-    /* Merge data (gather each 4 compressed Data) */
-    for (Bit#(8)i=0;i<16;i=i+1) begin
-        rule mergeData;
-            Bit#(88) outd = 0;
-            Bit#(10) amount = 0;
-                /* encode E bits */
-            if (i == 0) begin
-                encodingExp.deq;
-                let e = encodingExp.first;
-                outd = outd | zeroExtend(e);
-                amount = amount + 12;
-            end
-            for (Bit#(8)j=0; j < 4 ; j=j+1) begin
-                toMerge_amount[i*4+j].deq;
-                toMerge_data[i*4+j].deq;
-                let d = toMerge_data[i*4+j].first;
-                let t_amount = toMerge_amount[i*4+j].first;
-
-                if (i*4 + j < encodeBudget) begin
-                    outd = mergeCat_4_data(outd,d,zeroExtend(t_amount));
-                end else begin
-                    t_amount = 0;
+            if (i < encodeBudget) begin
+                ti = get_table_idx(in);
+                header = msbCodeTable[ti];
+                if (header == 4) begin
+                    in[1] = 0;
                 end
-                amount = amount + zeroExtend(t_amount);
-            end
 
-            toMerge_8_amount[i].enq(amount);
-            toMerge_8_data[i].enq(outd);
-        endrule
-    end
-
-    /* Merge data (gather each 8 compressed Data) */
-    for (Bit#(8)i=0;i<8;i=i+1) begin
-        rule mergeData;
-            toMerge_8_amount[i*2].deq;
-            toMerge_8_amount[i*2+1].deq;
-            toMerge_8_data[i*2].deq;
-            toMerge_8_data[i*2+1].deq;
-            Bit#(164) outd = zeroExtend(toMerge_8_data[i*2].first);
-            Bit#(10) amount = toMerge_8_amount[i*2].first;
-            let d = toMerge_8_data[i*2+1].first;
-            let t_amount = toMerge_8_amount[i*2+1].first;
-
-            outd = mergeCat_8_data(outd,d,t_amount);
-            amount = amount+t_amount;
-
-            toMerge_last_amount[i].enq(amount);
-            toMerge_last_data[i].enq(outd);
-        endrule
-    end
-    /* Merge Last! data */
-    for (Bit#(8)i=0;i<4;i=i+1) begin
-        rule mergeLastData;
-            toMerge_last_amount[i*2].deq;
-            toMerge_last_amount[i*2+1].deq;
-            toMerge_last_data[i*2].deq;
-            toMerge_last_data[i*2+1].deq;
-            if (i*16 < encodeBudget) begin
-                Bit#(316) outd = zeroExtend(toMerge_last_data[i*2].first);
-                Bit#(10) amount = toMerge_last_amount[i*2].first;
-                let d = toMerge_last_data[i*2+1].first;
-                let t_amount = toMerge_last_amount[i*2+1].first;
-
-                outd = mergeCat(outd,d,t_amount);
-                amount = amount+t_amount;
-
-                toOutBuff_amount[i].enq(amount);
-                toOutBuff_data[i].enq(outd);
+                merge_step1_header[i].enq(header);
+                merge_step1_data[i].enq(in);
             end
         endrule
     end
-(* descending_urgency = "outBuff, sendRemains" *)
-    rule outBuff;
-        Bit#(632) cbuf = buffer;
-        Bit#(10) coff = offset;
-        Bit#(8) cycle = bufferCycle;
-        Bit#(632) temp = 0;
 
-        toOutBuff_amount[cycle].deq;
-        toOutBuff_data[cycle].deq;
-        let amount = toOutBuff_amount[cycle].first;
-        let d = toOutBuff_data[cycle].first;
-        temp = zeroExtend(d);
-        temp = temp << (632-amount);
-        temp = temp >> coff;
-        cbuf = cbuf | temp;
-        coff = coff + amount;
-        if (coff > 316) begin
-            outputQ.enq(cbuf[631:316]);
-            offset <= coff - 316;
-            cbuf = zeroExtend(cbuf[315:0]);
-            buffer <= cbuf << 316;
-        end else begin
-            offset <= coff;
-            buffer <= cbuf;
+    for (Bit#(6)i=0;i<8;i=i+1) begin
+        rule merge_step1;
+            Bit#(3) header = 0;
+            Bit#(16) data = 0;
+            Bit#(4) header_amount = 0;
+            Bit#(7) data_amount = 0;
+
+            Bit#(64) data_acu = 0;
+            Bit#(12) header_acu = 0;
+            for (Bit#(6)j=0;j<4 && i*4+j < encodeBudget ;j=j+1) begin
+                Bit#(4) temp_h_amount;
+                Bit#(7) temp_d_amount;
+
+                merge_step1_data[i*4+j].deq;
+                merge_step1_header[i*4+j].deq;
+                data = merge_step1_data[i*4+j].first;
+                header = merge_step1_header[i*4+j].first;
+
+                /* get amount */
+                temp_h_amount = get_h_amount(header);
+                temp_d_amount = get_d_amount(header);
+                /* accumulate */
+                header_acu = header_acu << temp_h_amount;
+                data_acu = data_acu << temp_d_amount;
+                header_acu = header_acu | zeroExtend(header);
+                data_acu = data_acu | zeroExtend(data);
+                /* amount sum */
+                header_amount = header_amount + temp_h_amount;
+                data_amount = data_amount + temp_d_amount;
+            end
+            merge_step2_data[i].enq(data_acu);
+            merge_step2_header[i].enq(header_acu);
+            merge_step2_data_amount[i].enq(data_amount);
+            merge_step2_header_amount[i].enq(header_amount);
+        endrule
+    end
+    for (Bit#(6)i=0;i<4;i=i+1) begin
+        rule merge_step2;
+            Bit#(128) data_acu = 0;
+            Bit#(24) header_acu = 0;
+            Bit#(5) header_amount = 0;
+            Bit#(8) data_amount = 0;
+            if((i*2)*4 < encodeBudget) begin
+                merge_step2_data[i*2].deq;
+                merge_step2_header[i*2].deq;
+                merge_step2_data_amount[i*2].deq;
+                merge_step2_header_amount[i*2].deq;
+                data_acu = zeroExtend(merge_step2_data[i*2].first);
+                header_acu = zeroExtend(merge_step2_header[i*2].first);
+                data_amount = zeroExtend(merge_step2_data_amount[i*2].first);
+                header_amount = zeroExtend(merge_step2_header_amount[i*2].first);
+            end
+            if((i*2+1)*4 < encodeBudget) begin
+                merge_step2_data[i*2+1].deq;
+                merge_step2_header[i*2+1].deq;
+                merge_step2_data_amount[i*2+1].deq;
+                merge_step2_header_amount[i*2+1].deq;
+                let d_amount = merge_step2_data_amount[i*2+1].first;
+                let h_amount = merge_step2_header_amount[i*2+1].first;
+                data_acu = (data_acu << d_amount) | zeroExtend(merge_step2_data[i*2+1].first);
+                header_acu = (header_acu << h_amount) | zeroExtend(merge_step2_header[i*2+1].first);
+                data_amount = data_amount + zeroExtend(d_amount);
+                header_amount = header_amount + zeroExtend(h_amount);
+            end
+            toOut_d[i].enq(data_acu);
+            toOut_d_amount[i].enq(data_amount);
+            toOut_h[i].enq(header_acu);
+            toOut_h_amount[i].enq(header_amount);
+        endrule
+    end
+(* descending_urgency = "out, sendRemains" *)
+    rule out;
+        Bit#(328) output_buf = output_buffer;
+        Bit#(328) temp = 0;
+
+        Bit#(9) output_buf_off = output_buffer_off;
+        Bit#(2) cycle = outCycle;
+
+        if (cycle == 0) begin
+            encodingExp.deq;
+            let e = encodingExp.first;
+            output_buf_off = output_buf_off + 12;
+            output_buf = output_buf << 12;
+            output_buf = output_buf | zeroExtend(e);
         end
-        if( (encodeBudget-1)/16 == cycle) begin
-            bufferCycle <= 0;
+        toOut_d[cycle].deq;
+        toOut_h[cycle].deq;
+        toOut_d_amount[cycle].deq;
+        toOut_h_amount[cycle].deq;
+        let d = toOut_d[cycle].first;
+        let h = toOut_h[cycle].first;
+        let d_m = toOut_d_amount[cycle].first;
+        let h_m = toOut_h_amount[cycle].first;
+        output_buf = output_buf << h_m;
+        output_buf = output_buf | zeroExtend(h);
+        output_buf = output_buf << d_m;
+        output_buf = output_buf | zeroExtend(d);
+        output_buf_off = output_buf_off + zeroExtend(d_m) + zeroExtend(h_m);
+
+        if (output_buf_off > 164) begin
+            outputQ.enq(truncateLSB(output_buf << (328-output_buf_off)));
+            output_buf = output_buf << (328+(164-output_buf_off));
+            output_buf = output_buf >> (328+(164-output_buf_off));
+            output_buf_off = output_buf_off - 164;
+        end
+        
+        output_buffer_off <= output_buf_off;
+        output_buffer <= output_buf;
+
+        if( (encodeBudget-1)/8 == zeroExtend(cycle)) begin
+            outCycle <= 0;
         end else begin
-            bufferCycle <= bufferCycle + 1;
+            outCycle <= outCycle + 1;
         end
         outBuffCycle <= outBuffCycle + 1;
     endrule
-
-    rule sendRemains(outBuffCycle / ((zeroExtend(encodeBudget) - 1) / 16 + 1) == totalMatrixCnt);
-        lastOutputQ.enq(buffer);
+    rule sendRemains(outBuffCycle / ((zeroExtend(encodeBudget) - 1) / 8 + 1) == totalMatrixCnt);
+        lastOutputQ.enq(output_buffer);
         outBuffCycle <= 0;
     endrule
 
@@ -675,7 +572,7 @@ module mkZfp (ZfpIfc);
         inputQ.enq(data);
     endmethod
 
-    method Action put_encoding_size(Bit#(6) size);
+    method Action put_encoding_size(Bit#(5) size);
         encodeBudget <= zeroExtend(size) + 1;
     endmethod
 
@@ -684,13 +581,14 @@ module mkZfp (ZfpIfc);
     endmethod
 
     /* Send Output to Top.bsv */
-    method ActionValue#(Bit#(316)) get;
+    method ActionValue#(Bit#(164)) get;
         outputQ.deq;
         return outputQ.first;
     endmethod
 
-    method ActionValue#(Bit#(632)) get_last;
+    method ActionValue#(Bit#(328)) get_last;
         lastOutputQ.deq;
         return lastOutputQ.first;
     endmethod
 endmodule
+
